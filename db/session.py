@@ -4,7 +4,7 @@ import os
 from typing import Generator
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from sqlalchemy.org import Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 # Ensure environment variables are loaded from .env
 load_dotenv()
 
@@ -19,7 +19,7 @@ if DATABASE_URL.startswith("postgres://"):
 
 engine = create_engine(
     DATABASE_URL,
-    echo-False,
+    echo=False,
     pool_pre_ping=True,
 )
 
