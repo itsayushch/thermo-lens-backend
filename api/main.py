@@ -1,12 +1,28 @@
 """ThermoLens API - FastAPI backend service for industrial fire classification."""
 
-from datetime import date
-from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, Query, status
+from datetime import date, datetime
+import logging
+from typing import Any, Dict, List, Optional
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from db.session import engine
+from db.session import engine, get_db
+from services.incidents import (
+    get_incident_by_id,
+    get_incidents as fetch_incidents,
+    incident_to_pipeline_schema,
+    save_incident,
+)
+from shared.schemas import (
+    HotspotClass,
+    PipelineIncident,
+    SeverityLevel,
+)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="ThermoLens API",
@@ -143,3 +159,124 @@ def get_facilities(
         "type": "FeatureCollection",
         "features": [],
     }
+
+
+@app.post(
+    "/incidents",
+    response_model=PipelineIncident,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Incidents"],
+    summary="Record verified AI/ML pipeline incident",
+)
+def create_incident(
+    incident: PipelineIncident,
+    hotspot_id: Optional[int] = Query(
+        default=None,
+        description="Optional foreign key linking to raw hotspot row",
+    ),
+    db: Session = Depends(get_db),
+) -> PipelineIncident:
+    """Ingest and persist a verified thermal anomaly incident emitted by the AI/ML pipeline."""
+    try:
+        saved_incident = save_incident(db, incident, hotspot_id=hotspot_id)
+        return incident_to_pipeline_schema(saved_incident)
+    except IntegrityError as exc:
+        db.rollback()
+        logger.warning(
+            "Duplicate incident creation attempt for ID '%s': %s",
+            incident.incident_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Incident with ID '{incident.incident_id}' already exists.",
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to persist incident '%s': %s",
+            incident.incident_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist incident.",
+        )
+
+
+@app.get(
+    "/incidents",
+    response_model=List[PipelineIncident],
+    status_code=status.HTTP_200_OK,
+    tags=["Incidents"],
+    summary="Query verified incidents",
+)
+def list_incidents(
+    severity_level: Optional[SeverityLevel] = Query(
+        default=None,
+        description="Filter by operational severity (RED, AMBER, GREEN)",
+    ),
+    hazard_type: Optional[HotspotClass] = Query(
+        default=None,
+        description="Filter by fire hazard classification category",
+    ),
+    facility_id: Optional[str] = Query(
+        default=None,
+        description="Filter by facility identifier",
+    ),
+    start_time: Optional[datetime] = Query(
+        default=None,
+        description="Filter incidents on or after this timestamp (ISO 8601 UTC)",
+    ),
+    end_time: Optional[datetime] = Query(
+        default=None,
+        description="Filter incidents on or before this timestamp (ISO 8601 UTC)",
+    ),
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records to return",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Number of records to skip for pagination",
+    ),
+    db: Session = Depends(get_db),
+) -> List[PipelineIncident]:
+    """Retrieve verified incidents with multi-attribute filtering and pagination."""
+    incidents = fetch_incidents(
+        db=db,
+        severity_level=severity_level,
+        hazard_type=hazard_type,
+        facility_id=facility_id,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        offset=offset,
+    )
+    return [incident_to_pipeline_schema(inc) for inc in incidents]
+
+
+@app.get(
+    "/incidents/{incident_id}",
+    response_model=PipelineIncident,
+    status_code=status.HTTP_200_OK,
+    tags=["Incidents"],
+    summary="Retrieve single incident by ID",
+)
+def get_incident(
+    incident_id: str,
+    db: Session = Depends(get_db),
+) -> PipelineIncident:
+    """Retrieve incident details by unique business incident_id."""
+    incident = get_incident_by_id(db, incident_id)
+    if not incident:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Incident '{incident_id}' not found.",
+        )
+    return incident_to_pipeline_schema(incident)
+
