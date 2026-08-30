@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import Any, Optional
 from geoalchemy2 import Geometry
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -137,3 +138,74 @@ class ClassifiedHotspot(Base):
 
     def __repr__(self) -> str:
         return f"<ClassifiedHotspot(id={self.id}, hotspot_id={self.hotspot_id}, class='{self.predicted_class}', score={self.confidence_score:.2f})>"
+
+
+class Incident(Base):
+    """Represents a verified industrial anomaly incident emitted by the AI/ML pipeline."""
+
+    __tablename__ = "incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incident_id: Mapped[str] = mapped_column(
+        String(100), unique=True, index=True, nullable=False
+    )
+    facility_id: Mapped[Optional[str]] = mapped_column(
+        String(100), index=True, nullable=True
+    )
+    hotspot_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("hotspots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Geographic & Temporal
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    satellite_source: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # PostGIS Point geometry (WGS84 EPSG:4326)
+    geometry: Mapped[Optional[Any]] = mapped_column(
+        Geometry(geometry_type="POINT", srid=4326, spatial_index=True),
+        nullable=True,
+    )
+
+    # AI/ML Prediction & Severity
+    hazard_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True
+    )  # industrial, gas_flare, agricultural_burn, mining, wildfire, unknown
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    severity_level: Mapped[str] = mapped_column(
+        String(10), nullable=False, index=True
+    )  # RED, AMBER, GREEN
+
+    # Thermal & Radiative Metrics
+    temp_mir_k: Mapped[float] = mapped_column(Float, nullable=False)
+    temp_tir_k: Mapped[float] = mapped_column(Float, nullable=False)
+    frp_mw: Mapped[float] = mapped_column(Float, nullable=False)
+    frp_spike_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Validation Checks
+    historical_pass_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    osm_landuse: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    is_glint: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    hotspot: Mapped[Optional["Hotspot"]] = relationship("Hotspot")
+
+    def __repr__(self) -> str:
+        return f"<Incident(id={self.id}, incident_id='{self.incident_id}', hazard='{self.hazard_type}', severity='{self.severity_level}')>"
+
