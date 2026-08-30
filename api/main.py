@@ -261,6 +261,91 @@ def list_incidents(
 
 
 @app.get(
+    "/incidents/geojson",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    tags=["Incidents"],
+    summary="Query verified incidents as GeoJSON FeatureCollection",
+)
+def get_incidents_geojson(
+    severity_level: Optional[SeverityLevel] = Query(
+        default=None,
+        description="Filter by operational severity (RED, AMBER, GREEN)",
+    ),
+    hazard_type: Optional[HotspotClass] = Query(
+        default=None,
+        description="Filter by fire hazard classification category",
+    ),
+    facility_id: Optional[str] = Query(
+        default=None,
+        description="Filter by facility identifier",
+    ),
+    start_time: Optional[datetime] = Query(
+        default=None,
+        description="Filter incidents on or after this timestamp (ISO 8601 UTC)",
+    ),
+    end_time: Optional[datetime] = Query(
+        default=None,
+        description="Filter incidents on or before this timestamp (ISO 8601 UTC)",
+    ),
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records to return",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Number of records to skip for pagination",
+    ),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Retrieve verified incidents formatted as a standard GeoJSON FeatureCollection."""
+    incidents = fetch_incidents(
+        db=db,
+        severity_level=severity_level,
+        hazard_type=hazard_type,
+        facility_id=facility_id,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        offset=offset,
+    )
+
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [inc.longitude, inc.latitude],
+            },
+            "properties": {
+                "incident_id": inc.incident_id,
+                "facility_id": inc.facility_id,
+                "hazard_type": inc.hazard_type,
+                "severity_level": inc.severity_level,
+                "confidence_score": inc.confidence_score,
+                "frp_mw": inc.frp_mw,
+                "frp_spike_ratio": inc.frp_spike_ratio,
+                "satellite_source": inc.satellite_source,
+                "timestamp_utc": (
+                    inc.timestamp_utc.isoformat()
+                    if hasattr(inc.timestamp_utc, "isoformat")
+                    else str(inc.timestamp_utc)
+                ),
+            },
+        }
+        for inc in incidents
+    ]
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+    }
+
+
+@app.get(
     "/incidents/{incident_id}",
     response_model=PipelineIncident,
     status_code=status.HTTP_200_OK,
@@ -279,4 +364,5 @@ def get_incident(
             detail=f"Incident '{incident_id}' not found.",
         )
     return incident_to_pipeline_schema(incident)
+
 

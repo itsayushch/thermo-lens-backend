@@ -207,3 +207,91 @@ def test_list_incidents_filtering_and_pagination(client: TestClient):
     res_paged = client.get("/incidents?limit=2&offset=1")
     assert res_paged.status_code == status.HTTP_200_OK
     assert len(res_paged.json()) == 2
+
+
+def test_get_incidents_geojson_empty(client: TestClient):
+    """GET /incidents/geojson: When no records exist, return valid empty FeatureCollection."""
+    res = client.get("/incidents/geojson")
+    assert res.status_code == status.HTTP_200_OK
+    data = res.json()
+    assert data["type"] == "FeatureCollection"
+    assert data["features"] == []
+
+
+def test_get_incidents_geojson_features_and_coordinate_order(client: TestClient):
+    """GET /incidents/geojson: Returns FeatureCollection with [lon, lat] coordinates and properties."""
+    payload = _sample_incident_payload(
+        incident_id="INC-GEO-001",
+        facility_id="FAC_JAMNAGAR_01",
+        hazard_type="gas_flare",
+        severity_level="RED",
+    )
+    # Ensure specific coordinates: lat=22.3039, lon=70.8022
+    payload["latitude"] = 22.3039
+    payload["longitude"] = 70.8022
+    client.post("/incidents", json=payload)
+
+    res = client.get("/incidents/geojson")
+    assert res.status_code == status.HTTP_200_OK
+    data = res.json()
+    assert data["type"] == "FeatureCollection"
+    assert len(data["features"]) == 1
+
+    feature = data["features"][0]
+    assert feature["type"] == "Feature"
+
+    # Verify standard GeoJSON Point format: [longitude, latitude]
+    geometry = feature["geometry"]
+    assert geometry["type"] == "Point"
+    assert geometry["coordinates"] == [70.8022, 22.3039]
+
+    # Verify expected properties
+    props = feature["properties"]
+    assert props["incident_id"] == "INC-GEO-001"
+    assert props["facility_id"] == "FAC_JAMNAGAR_01"
+    assert props["hazard_type"] == "gas_flare"
+    assert props["severity_level"] == "RED"
+    assert props["confidence_score"] == 0.95
+    assert props["frp_mw"] == 18.5
+    assert props["frp_spike_ratio"] == 2.4
+    assert props["satellite_source"] == "VIIRS-NOAA20"
+    assert "timestamp_utc" in props
+
+    # Ensure internal DB fields are not exposed in properties
+    assert "id" not in props
+    assert "hotspot_id" not in props
+    assert "created_at" not in props
+
+
+def test_get_incidents_geojson_filtering_and_pagination(client: TestClient):
+    """GET /incidents/geojson: Validates filtering and pagination parameters."""
+    t0 = "2026-08-30T10:00:00Z"
+    t1 = "2026-08-30T11:00:00Z"
+    t2 = "2026-08-30T12:00:00Z"
+
+    client.post("/incidents", json=_sample_incident_payload("INC-G1", facility_id="FAC_ALPHA", hazard_type="industrial", severity_level="RED", timestamp_utc=t0))
+    client.post("/incidents", json=_sample_incident_payload("INC-G2", facility_id="FAC_ALPHA", hazard_type="gas_flare", severity_level="RED", timestamp_utc=t1))
+    client.post("/incidents", json=_sample_incident_payload("INC-G3", facility_id="FAC_BETA", hazard_type="wildfire", severity_level="AMBER", timestamp_utc=t2))
+
+    # Filter by severity
+    res_red = client.get("/incidents/geojson?severity_level=RED")
+    assert res_red.status_code == status.HTTP_200_OK
+    assert len(res_red.json()["features"]) == 2
+
+    # Filter by hazard_type
+    res_wildfire = client.get("/incidents/geojson?hazard_type=wildfire")
+    assert res_wildfire.status_code == status.HTTP_200_OK
+    features_wf = res_wildfire.json()["features"]
+    assert len(features_wf) == 1
+    assert features_wf[0]["properties"]["incident_id"] == "INC-G3"
+
+    # Filter by facility_id
+    res_fac = client.get("/incidents/geojson?facility_id=FAC_ALPHA")
+    assert res_fac.status_code == status.HTTP_200_OK
+    assert len(res_fac.json()["features"]) == 2
+
+    # Pagination: limit & offset
+    res_paged = client.get("/incidents/geojson?limit=2&offset=1")
+    assert res_paged.status_code == status.HTTP_200_OK
+    assert len(res_paged.json()["features"]) == 2
+
