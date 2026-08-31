@@ -1,0 +1,9 @@
+Factory Roster Baseline Data
+-----------------------------
+File: factory_roster_2yr.parquet
+Size: ~110MB
+Description: Per-500m-grid baseline stats (FRP median, T4 median, pass counts, etc.) for all of India, used for thermal anomaly fingerprinting.
+
+Download: https://github.com/itsayushch/thermo-lens-backend/releases/download/data_v1/factory_roster_2yr.parquet
+
+Note: File is too large for direct repo upload, hosted here as a Release asset instead.
