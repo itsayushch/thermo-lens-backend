@@ -167,9 +167,9 @@ def _apply_remote_vegetation_rule(
     if distance_m < 3000.0:
         return predicted_class, confidence_score
 
-    has_strong_thermal_signal = frp >= 25.0 or brightness >= 350.0
-    has_confident_hot_signal = confidence_num >= 50.0 and brightness >= 335.0
-    has_persistent_signal = persistence_days >= 2 and frp >= 15.0
+    has_strong_thermal_signal = frp >= 40.0 or brightness >= 360.0
+    has_confident_hot_signal = confidence_num >= 75.0 and brightness >= 345.0 and frp >= 15.0
+    has_persistent_signal = persistence_days >= 3 and frp >= 20.0
 
     if has_strong_thermal_signal or has_confident_hot_signal or has_persistent_signal:
         return "wildfire", max(confidence_score, 0.62)
@@ -218,6 +218,10 @@ def predict_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
         confidence_num=confidence_num,
         persistence_days=persistence_days,
     )
+
+    if distance_m > 2000.0 and persistence_days >= 5:
+        predicted_class = "industrial"
+        confidence_score = max(confidence_score, 0.75)
 
     if predicted_class not in BASE_CLASSES:
         LOGGER.warning("Unexpected model class '%s'; falling back to industrial", predicted_class)

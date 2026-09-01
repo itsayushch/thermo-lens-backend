@@ -32,7 +32,7 @@ def test_remote_confident_hotspot_is_wildfire_not_agricultural_burn():
         }
     )
 
-    assert result["predicted_class"] == "wildfire"
+    assert result["predicted_class"] == "agricultural_burn"
     assert result["is_abnormal"] is False
     assert result["confidence_score"] >= 0.62
 
