@@ -1,0 +1,14 @@
+{
+  "default_chemical_site": {
+    "mean_frp": 30.0
+  },
+  "default_power_plant": {
+    "mean_frp": 28.0
+  },
+  "default_refinery": {
+    "mean_frp": 35.0
+  },
+  "default_steel_plant": {
+    "mean_frp": 42.0
+  }
+}
