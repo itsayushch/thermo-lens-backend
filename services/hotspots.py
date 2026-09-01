@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from collections import defaultdict
+from datetime import date, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import httpx
+from shapely.geometry import Point, shape
+from shapely.ops import unary_union
+from shapely.prepared import PreparedGeometry, prep
 
 from classification.infer import predict_hotspot
 from ingestion.firms import parse_firms_csv, parse_firms_csv_text
@@ -21,6 +26,7 @@ DEFAULT_SOURCE = "VIIRS_SNPP_NRT"
 DEFAULT_DAY_RANGE = 1
 DEFAULT_LIMIT = 1000
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+INDIA_BOUNDARY_URL = "https://raw.githubusercontent.com/datameet/maps/master/Country/india-composite.geojson"
 
 
 def parse_bbox(bbox: str | None) -> tuple[float, float, float, float]:
@@ -61,6 +67,34 @@ def _in_bbox(hotspot: RawHotspot, bounds: tuple[float, float, float, float]) -> 
     return min_lon <= hotspot.lon <= max_lon and min_lat <= hotspot.lat <= max_lat
 
 
+@lru_cache(maxsize=1)
+def _india_boundary() -> PreparedGeometry | None:
+    try:
+        response = httpx.get(INDIA_BOUNDARY_URL, timeout=30.0)
+        response.raise_for_status()
+        boundary = response.json()
+        geometries = [
+            shape(feature["geometry"])
+            for feature in boundary.get("features", [])
+            if feature.get("geometry")
+        ]
+        if not geometries:
+            return None
+        return prep(unary_union(geometries))
+    except Exception:
+        LOGGER.exception("Failed to load India boundary; falling back to India bounding box only")
+        return None
+
+
+def _in_india(hotspot: RawHotspot) -> bool:
+    boundary = _india_boundary()
+    if boundary is not None:
+        point = Point(hotspot.lon, hotspot.lat)
+        return boundary.contains(point) or boundary.covers(point)
+
+    return _in_bbox(hotspot, DEFAULT_INDIA_BBOX)
+
+
 def _date_allowed(hotspot: RawHotspot, start_date: date | None, end_date: date | None) -> bool:
     if start_date and hotspot.acq_date < start_date:
         return False
@@ -90,13 +124,37 @@ def _fetch_live_firms_hotspots(
         return []
 
     area = ",".join(f"{value:g}" for value in bounds)
-    url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/{source}/{area}/{day_range}"
-    if end_date:
-        url = f"{url}/{end_date.isoformat()}"
+    if day_range <= 1 or end_date is None:
+        url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/{source}/{area}/1"
+        if end_date:
+            url = f"{url}/{end_date.isoformat()}"
+        response = httpx.get(url, timeout=30.0)
+        response.raise_for_status()
+        return parse_firms_csv_text(response.text)
 
-    response = httpx.get(url, timeout=30.0)
-    response.raise_for_status()
-    return parse_firms_csv_text(response.text)
+    hotspots: list[RawHotspot] = []
+    for offset in range(day_range):
+        request_date = end_date - timedelta(days=day_range - offset - 1)
+        url = (
+            f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
+            f"{map_key}/{source}/{area}/1/{request_date.isoformat()}"
+        )
+        response = httpx.get(url, timeout=30.0)
+        response.raise_for_status()
+        hotspots.extend(parse_firms_csv_text(response.text))
+
+    deduped: dict[tuple[float, float, date, str, str], RawHotspot] = {}
+    for hotspot in hotspots:
+        key = (
+            round(hotspot.lat, 5),
+            round(hotspot.lon, 5),
+            hotspot.acq_date,
+            hotspot.acq_time,
+            hotspot.satellite,
+        )
+        deduped[key] = hotspot
+
+    return list(deduped.values())
 
 
 def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
@@ -137,6 +195,29 @@ def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
     }
 
 
+def _limit_balanced_by_date(hotspots: list[RawHotspot], limit: int) -> list[RawHotspot]:
+    if len(hotspots) <= limit:
+        return hotspots
+
+    grouped: dict[date, list[RawHotspot]] = defaultdict(list)
+    for hotspot in sorted(hotspots, key=lambda item: (item.acq_date, item.acq_time), reverse=True):
+        grouped[hotspot.acq_date].append(hotspot)
+
+    selected: list[RawHotspot] = []
+    grouped_dates = sorted(grouped.keys(), reverse=True)
+    while len(selected) < limit and grouped_dates:
+        next_dates: list[date] = []
+        for hotspot_date in grouped_dates:
+            group = grouped[hotspot_date]
+            if group and len(selected) < limit:
+                selected.append(group.pop(0))
+            if group:
+                next_dates.append(hotspot_date)
+        grouped_dates = next_dates
+
+    return selected
+
+
 def get_hotspot_feature_collection(
     bbox: str | None,
     start_date: date | None,
@@ -146,7 +227,24 @@ def get_hotspot_feature_collection(
     day_range: int = DEFAULT_DAY_RANGE,
     limit: int = DEFAULT_LIMIT,
 ) -> dict[str, Any]:
-    bounds = parse_bbox(bbox)
+    requested_bounds = parse_bbox(bbox)
+    india_bounds = DEFAULT_INDIA_BBOX
+    bounds = (
+        max(requested_bounds[0], india_bounds[0]),
+        max(requested_bounds[1], india_bounds[1]),
+        min(requested_bounds[2], india_bounds[2]),
+        min(requested_bounds[3], india_bounds[3]),
+    )
+    if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "metadata": {
+                "source": "outside India",
+                "count": 0,
+                "country": "IND",
+            },
+        }
     safe_day_range = max(1, min(day_range, 10))
     safe_limit = max(1, min(limit, 5000))
 
@@ -161,20 +259,23 @@ def get_hotspot_feature_collection(
         data_source = "local FIRMS CSV"
         hotspots = _local_csv_hotspots()
 
-    features = []
-    for index, hotspot in enumerate(hotspots):
+    eligible_hotspots: list[RawHotspot] = []
+    for hotspot in hotspots:
         if not _in_bbox(hotspot, bounds):
+            continue
+        if not _in_india(hotspot):
             continue
         if not _date_allowed(hotspot, start_date, end_date):
             continue
+        eligible_hotspots.append(hotspot)
 
+    features = []
+    for index, hotspot in enumerate(_limit_balanced_by_date(eligible_hotspots, safe_limit)):
         feature = _hotspot_to_feature(hotspot, index)
         if hotspot_class and feature["properties"]["predicted_class"] != hotspot_class:
             continue
 
         features.append(feature)
-        if len(features) >= safe_limit:
-            break
 
     return {
         "type": "FeatureCollection",
@@ -182,5 +283,7 @@ def get_hotspot_feature_collection(
         "metadata": {
             "source": data_source,
             "count": len(features),
+            "available_count": len(eligible_hotspots),
+            "country": "IND",
         },
     }
