@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from ingestion.firms import parse_firms_csv, parse_firms_csv_text
 from shared.schemas import RawHotspot
+from services.hotspots import estimate_affected_radius_m
 
 
 def test_parse_standard_firms_csv(tmp_path: Path):
@@ -194,3 +195,29 @@ def test_parse_firms_csv_text_from_api_response():
     assert hotspots[0].frp == 8.4
     assert hotspots[0].acq_time == "0345"
     assert hotspots[0].satellite == "VIIRS-SNPP"
+
+
+def test_estimate_affected_radius_uses_sensor_scale():
+    viirs = RawHotspot(
+        lat=22.3039,
+        lon=70.8022,
+        brightness=332.4,
+        frp=8.4,
+        acq_date=date(2026, 8, 28),
+        acq_time="0345",
+        confidence="h",
+        satellite="VIIRS-SNPP",
+    )
+    modis = RawHotspot(
+        lat=22.3039,
+        lon=70.8022,
+        brightness=332.4,
+        frp=8.4,
+        acq_date=date(2026, 8, 28),
+        acq_time="0345",
+        confidence="85",
+        satellite="MODIS-Terra",
+    )
+
+    assert 150 <= estimate_affected_radius_m(viirs) < estimate_affected_radius_m(modis)
+    assert estimate_affected_radius_m(modis) <= 1200

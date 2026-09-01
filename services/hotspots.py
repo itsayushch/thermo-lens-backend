@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import defaultdict
 from datetime import date, timedelta
@@ -60,6 +61,27 @@ def confidence_to_number(confidence: str | int | float) -> float:
         return max(0.0, min(100.0, float(normalized)))
     except ValueError:
         return 60.0
+
+
+def estimate_affected_radius_m(hotspot: RawHotspot) -> int:
+    """Estimate a display footprint from FIRMS pixel scale and signal strength.
+
+    FIRMS active-fire points are detections, not burn perimeters. This radius is a
+    conservative map footprint/uncertainty estimate derived from sensor resolution,
+    FRP, and detection confidence.
+    """
+    satellite = hotspot.satellite.lower()
+    if "modis" in satellite:
+        base_radius_m = 500.0
+    else:
+        base_radius_m = 190.0
+
+    frp_factor = 1.0 + min(1.0, math.sqrt(max(hotspot.frp, 0.0) / 250.0)) * 0.55
+    confidence = confidence_to_number(hotspot.confidence)
+    confidence_factor = 1.0 + ((100.0 - confidence) / 100.0) * 0.20
+
+    radius_m = base_radius_m * frp_factor * confidence_factor
+    return round(max(150.0, min(1200.0, radius_m)))
 
 
 def _in_bbox(hotspot: RawHotspot, bounds: tuple[float, float, float, float]) -> bool:
@@ -159,6 +181,8 @@ def _fetch_live_firms_hotspots(
 
 def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
     baseline_frp = 35.0
+    affected_radius_m = estimate_affected_radius_m(hotspot)
+    affected_area_km2 = math.pi * (affected_radius_m / 1000.0) ** 2
     classifier_input = {
         "brightness": hotspot.brightness,
         "frp": hotspot.frp,
@@ -191,6 +215,8 @@ def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
             "predicted_class": classification["predicted_class"],
             "confidence_score": round(float(classification["confidence_score"]) * 100.0),
             "severity_score": classification["severity_score"],
+            "affected_radius_m": affected_radius_m,
+            "affected_area_km2": round(affected_area_km2, 3),
         },
     }
 
