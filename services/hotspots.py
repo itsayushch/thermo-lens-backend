@@ -23,7 +23,12 @@ from shared.schemas import RawHotspot
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_INDIA_BBOX = (68.0, 6.0, 98.0, 37.0)
-DEFAULT_SOURCE = "VIIRS_SNPP_NRT"
+DEFAULT_SOURCE = "ALL_VIIRS_NRT"
+DEFAULT_VIIRS_NRT_SOURCES = (
+    "VIIRS_SNPP_NRT",
+    "VIIRS_NOAA20_NRT",
+    "VIIRS_NOAA21_NRT",
+)
 DEFAULT_DAY_RANGE = 1
 DEFAULT_LIMIT = 1000
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -135,7 +140,39 @@ def _local_csv_hotspots() -> list[RawHotspot]:
     return hotspots
 
 
-def _fetch_live_firms_hotspots(
+def _resolve_firms_sources(source: str) -> tuple[str, ...]:
+    normalized = source.strip().upper()
+    if normalized in {"ALL", "ALL_VIIRS", "ALL_VIIRS_NRT", "VIIRS_NRT"}:
+        return DEFAULT_VIIRS_NRT_SOURCES
+    return (normalized,)
+
+
+def _dedupe_hotspots(hotspots: list[RawHotspot]) -> list[RawHotspot]:
+    deduped: dict[tuple[float, float, date, str, str], RawHotspot] = {}
+    for hotspot in hotspots:
+        key = (
+            round(hotspot.lat, 5),
+            round(hotspot.lon, 5),
+            hotspot.acq_date,
+            hotspot.acq_time,
+            hotspot.satellite,
+        )
+        deduped[key] = hotspot
+
+    return list(deduped.values())
+
+
+def _safe_raise_for_firms_status(response: httpx.Response, source: str) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        raise RuntimeError(
+            f"NASA FIRMS request failed for source={source} with status={status_code}"
+        ) from exc
+
+
+def _fetch_single_live_firms_hotspots(
     bounds: tuple[float, float, float, float],
     source: str,
     day_range: int,
@@ -151,7 +188,7 @@ def _fetch_live_firms_hotspots(
         if end_date:
             url = f"{url}/{end_date.isoformat()}"
         response = httpx.get(url, timeout=30.0)
-        response.raise_for_status()
+        _safe_raise_for_firms_status(response, source)
         return parse_firms_csv_text(response.text)
 
     hotspots: list[RawHotspot] = []
@@ -163,21 +200,30 @@ def _fetch_live_firms_hotspots(
             f"{map_key}/{source}/{area}/1/{request_date.isoformat()}"
         )
         response = httpx.get(url, timeout=30.0)
-        response.raise_for_status()
+        _safe_raise_for_firms_status(response, source)
         hotspots.extend(parse_firms_csv_text(response.text))
 
-    deduped: dict[tuple[float, float, date, str, str], RawHotspot] = {}
-    for hotspot in hotspots:
-        key = (
-            round(hotspot.lat, 5),
-            round(hotspot.lon, 5),
-            hotspot.acq_date,
-            hotspot.acq_time,
-            hotspot.satellite,
-        )
-        deduped[key] = hotspot
+    return _dedupe_hotspots(hotspots)
 
-    return list(deduped.values())
+
+def _fetch_live_firms_hotspots(
+    bounds: tuple[float, float, float, float],
+    source: str,
+    day_range: int,
+    end_date: date | None,
+) -> list[RawHotspot]:
+    hotspots: list[RawHotspot] = []
+    for resolved_source in _resolve_firms_sources(source):
+        hotspots.extend(
+            _fetch_single_live_firms_hotspots(
+                bounds,
+                resolved_source,
+                day_range,
+                end_date,
+            )
+        )
+
+    return _dedupe_hotspots(hotspots)
 
 
 @lru_cache(maxsize=128)
@@ -327,6 +373,7 @@ def get_hotspot_feature_collection(
         "features": features,
         "metadata": {
             "source": data_source,
+            "firms_sources": list(_resolve_firms_sources(source)),
             "count": len(features),
             "available_count": len(eligible_hotspots),
             "country": "IND",
