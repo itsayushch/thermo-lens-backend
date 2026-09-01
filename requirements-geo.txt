@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Optional geospatial data-processing dependencies.
+# These packages need GDAL-compatible wheels or native GDAL installed on Windows.
+geopandas>=0.14.0,<1.0.0
+rasterio>=1.3.10,<2.0.0
