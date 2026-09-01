@@ -7,9 +7,11 @@ Responsibilities:
 - Persist ingested raw observations into PostgreSQL
 """
 
-from ingestion.firms import parse_firms_csv
+from ingestion.firms import parse_firms_csv, parse_firms_csv_rows, parse_firms_csv_text
 
 __all__ = [
     "parse_firms_csv",
+    "parse_firms_csv_rows",
+    "parse_firms_csv_text",
 ]
 

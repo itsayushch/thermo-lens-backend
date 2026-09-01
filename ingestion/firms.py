@@ -9,7 +9,7 @@ from datetime import date, datetime
 import csv
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 from pydantic import ValidationError
 
 from shared.schemas import RawHotspot
@@ -261,3 +261,67 @@ def parse_firms_csv(
         logger.info("Successfully parsed %d hotspots from '%s'.", len(hotspots), path.name)
 
     return hotspots
+
+
+def parse_firms_csv_rows(
+    rows: Iterable[Dict[str, str]],
+    default_satellite: Optional[str] = None,
+    strict: bool = False,
+) -> List[RawHotspot]:
+    """Parse in-memory FIRMS CSV rows into validated RawHotspot models."""
+    hotspots: List[RawHotspot] = []
+    error_count = 0
+
+    for row_idx, row in enumerate(rows, start=2):
+        if not row or all(v is None or str(v).strip() == "" for v in row.values()):
+            continue
+
+        try:
+            hotspot = _parse_row_to_raw_hotspot(
+                row=row,
+                row_number=row_idx,
+                default_satellite=default_satellite,
+            )
+            hotspots.append(hotspot)
+        except (ValidationError, ValueError, TypeError, KeyError) as exc:
+            error_count += 1
+            error_msg = f"Failed to parse FIRMS CSV row {row_idx}: {exc}"
+            if strict:
+                logger.error(error_msg)
+                raise
+            logger.warning(error_msg)
+
+    if error_count > 0:
+        logger.info(
+            "Parsed %d valid in-memory FIRMS hotspots (%d invalid rows skipped).",
+            len(hotspots),
+            error_count,
+        )
+
+    return hotspots
+
+
+def parse_firms_csv_text(
+    csv_text: str,
+    default_satellite: Optional[str] = None,
+    strict: bool = False,
+) -> List[RawHotspot]:
+    """Parse FIRMS CSV text returned by the NASA API."""
+    reader = csv.DictReader(csv_text.splitlines())
+    if reader.fieldnames is None:
+        return []
+
+    normalized_headers = {_normalize_header_name(h) for h in reader.fieldnames if h}
+    has_lat = any(alias in normalized_headers for alias in COLUMN_ALIASES["lat"])
+    has_lon = any(alias in normalized_headers for alias in COLUMN_ALIASES["lon"])
+    if not has_lat or not has_lon:
+        raise ValueError(
+            "FIRMS CSV text is missing required coordinate columns "
+            f"(lat/latitude, lon/longitude). Found headers: {reader.fieldnames}"
+        )
+
+    return parse_firms_csv_rows(
+        reader,
+        default_satellite=default_satellite,
+        strict=strict,
+    )

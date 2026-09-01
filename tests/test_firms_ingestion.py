@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from ingestion.firms import parse_firms_csv
+from ingestion.firms import parse_firms_csv, parse_firms_csv_text
 from shared.schemas import RawHotspot
 
 
@@ -176,3 +176,21 @@ def test_satellite_default_fallback(tmp_path: Path):
     hotspots = parse_firms_csv(csv_file, default_satellite="VIIRS-NOAA20")
     assert len(hotspots) == 1
     assert hotspots[0].satellite == "VIIRS-NOAA20"
+
+
+def test_parse_firms_csv_text_from_api_response():
+    """Test parsing FIRMS CSV text without writing a temporary file."""
+    csv_content = (
+        "latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n"
+        "22.3039,70.8022,332.4,0.4,0.6,2026-08-28,345,N,VIIRS,n,2.0NRT,295.1,8.4,N\n"
+    )
+
+    hotspots = parse_firms_csv_text(csv_content)
+
+    assert len(hotspots) == 1
+    assert hotspots[0].lat == 22.3039
+    assert hotspots[0].lon == 70.8022
+    assert hotspots[0].brightness == 332.4
+    assert hotspots[0].frp == 8.4
+    assert hotspots[0].acq_time == "0345"
+    assert hotspots[0].satellite == "VIIRS-SNPP"

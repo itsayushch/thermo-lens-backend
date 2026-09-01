@@ -17,6 +17,7 @@ from services.incidents import (
     incident_to_pipeline_schema,
     save_incident,
 )
+from services.hotspots import get_hotspot_feature_collection
 from shared.schemas import (
     HotspotClass,
     PipelineIncident,
@@ -129,16 +130,40 @@ def get_hotspots(
         description="Filter by fire classification (industrial, gas_flare, agricultural_burn, mining, wildfire, unknown)",
         examples=["industrial"],
     ),
+    source: str = Query(
+        default="VIIRS_SNPP_NRT",
+        description="NASA FIRMS source, e.g. VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT",
+    ),
+    day_range: int = Query(
+        default=1,
+        ge=1,
+        le=10,
+        description="Number of recent days to request from FIRMS when FIRMS_API_KEY is configured",
+    ),
+    limit: int = Query(
+        default=1000,
+        ge=1,
+        le=5000,
+        description="Maximum number of hotspots to return",
+    ),
 ) -> Dict[str, Any]:
     """Query satellite hotspot detections filtered by bounding box, date range, and classification.
 
-    Returns a GeoJSON FeatureCollection. (Stub implementation)
+    Returns a GeoJSON FeatureCollection from NASA FIRMS live API when FIRMS_API_KEY
+    is configured, otherwise from local CSV files under data/.
     """
-    # Stub response returning an empty GeoJSON FeatureCollection
-    return {
-        "type": "FeatureCollection",
-        "features": [],
-    }
+    try:
+        return get_hotspot_feature_collection(
+            bbox=bbox,
+            start_date=start_date,
+            end_date=end_date,
+            hotspot_class=hotspot_class,
+            source=source,
+            day_range=day_range,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @app.get("/facilities", tags=["Facilities"])
