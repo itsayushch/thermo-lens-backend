@@ -1,0 +1,6 @@
+pandas
+numpy
+pyarrow
+xgboost
+netCDF4
+earthaccess
