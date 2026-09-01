@@ -180,6 +180,17 @@ def _fetch_live_firms_hotspots(
     return list(deduped.values())
 
 
+@lru_cache(maxsize=128)
+def _fetch_live_firms_hotspots_cached(
+    bounds: tuple[float, float, float, float],
+    source: str,
+    day_range: int,
+    end_date_key: str,
+) -> tuple[RawHotspot, ...]:
+    end_date = date.fromisoformat(end_date_key) if end_date_key else None
+    return tuple(_fetch_live_firms_hotspots(bounds, source, day_range, end_date))
+
+
 def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
     baseline_frp = 35.0
     affected_radius_m = estimate_affected_radius_m(hotspot)
@@ -277,7 +288,14 @@ def get_hotspot_feature_collection(
 
     data_source = "NASA FIRMS live API"
     try:
-        hotspots = _fetch_live_firms_hotspots(bounds, source, safe_day_range, end_date)
+        hotspots = list(
+            _fetch_live_firms_hotspots_cached(
+                bounds,
+                source,
+                safe_day_range,
+                end_date.isoformat() if end_date else "",
+            )
+        )
     except Exception:
         LOGGER.exception("Live FIRMS request failed; falling back to local CSV files")
         hotspots = []
