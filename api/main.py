@@ -131,8 +131,8 @@ def get_hotspots(
         examples=["industrial"],
     ),
     source: str = Query(
-        default="ALL_VIIRS_NRT",
-        description="NASA FIRMS source. Use ALL_VIIRS_NRT for S-NPP + NOAA-20 + NOAA-21, or a single source such as VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT",
+        default="VIIRS_SNPP_NRT",
+        description="NASA FIRMS source, e.g. VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT",
     ),
     day_range: int = Query(
         default=1,

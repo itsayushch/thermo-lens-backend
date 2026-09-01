@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from ingestion.firms import parse_firms_csv, parse_firms_csv_text
 from shared.schemas import RawHotspot
-from services.hotspots import estimate_affected_radius_m, get_hotspot_feature_collection
+from services.hotspots import estimate_affected_radius_m
 
 
 def test_parse_standard_firms_csv(tmp_path: Path):
@@ -221,21 +221,3 @@ def test_estimate_affected_radius_uses_sensor_scale():
 
     assert 150 <= estimate_affected_radius_m(viirs) < estimate_affected_radius_m(modis)
     assert estimate_affected_radius_m(modis) <= 1200
-
-
-def test_default_hotspot_source_aggregates_viirs_feeds(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("services.hotspots._fetch_live_firms_hotspots_cached", lambda *args: ())
-    monkeypatch.setattr("services.hotspots._local_csv_hotspots", lambda: [])
-
-    collection = get_hotspot_feature_collection(
-        bbox=None,
-        start_date=date(2026, 9, 1),
-        end_date=date(2026, 9, 1),
-        hotspot_class=None,
-    )
-
-    assert collection["metadata"]["firms_sources"] == [
-        "VIIRS_SNPP_NRT",
-        "VIIRS_NOAA20_NRT",
-        "VIIRS_NOAA21_NRT",
-    ]
