@@ -146,6 +146,37 @@ def _fallback_classification(hotspot: dict[str, Any]) -> tuple[str, float]:
     return "agricultural_burn", 0.50
 
 
+def _apply_remote_vegetation_rule(
+    predicted_class: str,
+    confidence_score: float,
+    frp: float,
+    brightness: float,
+    distance_m: float,
+    confidence_num: float,
+    persistence_days: int,
+) -> tuple[str, float]:
+    """Correct rural vegetation detections before they collapse into agri burn.
+
+    The MVP model does not yet receive land-cover polygons, so remote forest fires
+    can look similar to agricultural burning. This rule only adjusts non-industrial
+    remote detections with enough thermal signal to be operationally treated as
+    wildfire/vegetation fire.
+    """
+    if predicted_class not in {"agricultural_burn", "wildfire"}:
+        return predicted_class, confidence_score
+    if distance_m < 3000.0:
+        return predicted_class, confidence_score
+
+    has_strong_thermal_signal = frp >= 25.0 or brightness >= 350.0
+    has_confident_hot_signal = confidence_num >= 50.0 and brightness >= 335.0
+    has_persistent_signal = persistence_days >= 2 and frp >= 15.0
+
+    if has_strong_thermal_signal or has_confident_hot_signal or has_persistent_signal:
+        return "wildfire", max(confidence_score, 0.62)
+
+    return predicted_class, confidence_score
+
+
 def predict_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
     """Classify one enriched hotspot using the Thermal Fingerprinting Rule first."""
     frp = _as_float(hotspot.get("frp"), 0.0)
@@ -177,6 +208,16 @@ def predict_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
         predicted_class = str(MODEL.predict(features)[0])
         probabilities = MODEL.predict_proba(features)[0]
         confidence_score = float(max(probabilities))
+
+    predicted_class, confidence_score = _apply_remote_vegetation_rule(
+        predicted_class=predicted_class,
+        confidence_score=confidence_score,
+        frp=frp,
+        brightness=_as_float(hotspot.get("brightness"), 0.0),
+        distance_m=distance_m,
+        confidence_num=confidence_num,
+        persistence_days=persistence_days,
+    )
 
     if predicted_class not in BASE_CLASSES:
         LOGGER.warning("Unexpected model class '%s'; falling back to industrial", predicted_class)
