@@ -137,8 +137,8 @@ def get_hotspots(
     day_range: int = Query(
         default=1,
         ge=1,
-        le=10,
-        description="Number of recent days to request from FIRMS when FIRMS_API_KEY is configured",
+        le=30,
+        description="Number of recent days to request from FIRMS via per-day calls when FIRMS_API_KEY is configured",
     ),
     limit: int = Query(
         default=1000,

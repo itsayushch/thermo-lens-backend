@@ -146,7 +146,7 @@ def _fetch_live_firms_hotspots(
         return []
 
     area = ",".join(f"{value:g}" for value in bounds)
-    if day_range <= 1 or end_date is None:
+    if day_range <= 1:
         url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/{source}/{area}/1"
         if end_date:
             url = f"{url}/{end_date.isoformat()}"
@@ -155,8 +155,9 @@ def _fetch_live_firms_hotspots(
         return parse_firms_csv_text(response.text)
 
     hotspots: list[RawHotspot] = []
+    request_end_date = end_date or date.today()
     for offset in range(day_range):
-        request_date = end_date - timedelta(days=day_range - offset - 1)
+        request_date = request_end_date - timedelta(days=day_range - offset - 1)
         url = (
             f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
             f"{map_key}/{source}/{area}/1/{request_date.isoformat()}"
@@ -271,7 +272,7 @@ def get_hotspot_feature_collection(
                 "country": "IND",
             },
         }
-    safe_day_range = max(1, min(day_range, 10))
+    safe_day_range = max(1, min(day_range, 30))
     safe_limit = max(1, min(limit, 5000))
 
     data_source = "NASA FIRMS live API"
