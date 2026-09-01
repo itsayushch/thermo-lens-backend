@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from classification.router import router as ml_router
 from db.session import engine, get_db
 from services.incidents import (
     get_incident_by_id,
@@ -43,6 +44,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(ml_router)
 
 
 @app.get("/", tags=["Root"])
