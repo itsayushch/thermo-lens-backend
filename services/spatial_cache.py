@@ -33,6 +33,18 @@ def _init_cache():
         ml_cols = ['lat_grid', 'lon_grid', 'normal_frp_median', 'frp_std_dev', 
                    'normal_t4_median', 't4_std_dev', 'max_frp_recorded', 
                    'total_passes', 'monsoon_ratio', 'night_ratio']
+
+        required_cols = set(ml_cols) | {'night_passes'}
+        missing_cols = required_cols.difference(df.columns)
+        if missing_cols:
+            raise ValueError(
+                f"Facility roster is missing required columns: {sorted(missing_cols)}"
+            )
+
+        # Derive facility coordinates before reducing the dataframe to ML columns.
+        facility_df = df[
+            (df['total_passes'] >= 15) | (df['night_passes'] >= 5)
+        ]
         
         df = df[ml_cols].copy()
         
@@ -51,9 +63,7 @@ def _init_cache():
         
         # 2. Build BallTree for True Factories (for Spatial Distance)
         LOGGER.info("Filtering true factories for BallTree...")
-        df_filtered = df[(df['total_passes'] >= 15) | (df['night_passes'] >= 5)].copy()
-        
-        _facility_coords = df_filtered[['lat_grid', 'lon_grid']].values
+        _facility_coords = facility_df[['lat_grid', 'lon_grid']].values
         coords_rad = np.radians(_facility_coords)
         
         LOGGER.info(f"Building BallTree for {len(_facility_coords)} facility locations...")
@@ -102,4 +112,3 @@ def get_historical_baselines(hotspots: list[tuple[float, float]]) -> list[dict]:
             results.append({})
         
     return results
-
