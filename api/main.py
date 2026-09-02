@@ -56,7 +56,9 @@ app.include_router(ml_router)
 
 @app.on_event("startup")
 def startup_event():
+    from services.dataset import ensure_factory_roster
     logger.info("Initializing spatial cache on startup...")
+    ensure_factory_roster()
     from services.spatial_cache import _init_cache
     _init_cache()
 

@@ -186,3 +186,36 @@ If the database is unreachable or `DATABASE_URL` is misconfigured, the health en
 | `GET` | [/health](file:///C:/Users/ponma/thermo-lens-backend/api/main.py) | Health probe validating database and PostGIS extension connectivity |
 | `GET` | [/hotspots](file:///C:/Users/ponma/thermo-lens-backend/api/main.py) | Query thermal anomalies with `bbox`, `start_date`, `end_date`, `class` filters |
 | `GET` | [/facilities](file:///C:/Users/ponma/thermo-lens-backend/api/main.py) | Query industrial facilities with `facility_type`, `bbox` filters |
+
+---
+
+## Azure Container Apps Deployment
+
+The Azure deployment uses one 2 vCPU / 4 GiB Container Apps replica and stores
+`factory_roster_2yr.parquet` in a private Azure Blob Storage container. The app
+uses its system-assigned managed identity to read the roster, so no storage key
+is stored in the application configuration.
+
+Install the [Azure CLI](https://aka.ms/installazurecliwindows), sign in with
+`az login`, then run the following from PowerShell:
+
+```powershell
+.\azure\deploy.ps1 -DatabaseUrl "postgresql://USER:PASSWORD@HOST:5432/DATABASE"
+```
+
+Optional arguments let you select a region, resource group, application name,
+and FIRMS API key:
+
+```powershell
+.\azure\deploy.ps1 `
+  -DatabaseUrl "postgresql://USER:PASSWORD@HOST:5432/DATABASE" `
+  -Location "centralindia" `
+  -ResourceGroup "thermolens-rg" `
+  -AppName "thermolens-api" `
+  -FirmsApiKey "YOUR_FIRMS_KEY"
+```
+
+The script uploads the local `data/factory_roster_2yr.parquet`, creates the
+Container App, grants it `Storage Blob Data Reader`, and prints the public API
+URL. It creates resources in the specified resource group; delete that resource
+group from Azure when you no longer want to incur charges.
