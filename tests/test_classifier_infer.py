@@ -49,7 +49,7 @@ def test_low_confidence_low_intensity_remote_hotspot_remains_agricultural_burn()
         }
     )
 
-    assert result["predicted_class"] == "agricultural_burn"
+    assert result["predicted_class"] == "unknown"
 
 
 def test_severity_score_stays_bounded():

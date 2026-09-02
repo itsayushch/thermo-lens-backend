@@ -1,96 +1,61 @@
-"""Production inference wrapper for ThermoLens hotspot classification.
-
-The public contract in this module intentionally uses plain dictionaries so it can
-be imported by the FastAPI backend branch without coupling to database or
-pipeline-internal schemas.
-"""
-
-from __future__ import annotations
-
 import json
 import logging
 from pathlib import Path
 from typing import Any, Final
-
-import joblib
+import numpy as np
 import pandas as pd
+import xgboost as xgb
 
 LOGGER = logging.getLogger(__name__)
 
-BASE_DIR: Final[Path] = Path(__file__).resolve().parent
-ARTIFACTS_DIR: Final[Path] = BASE_DIR / "artifacts"
-MODEL_PATH: Final[Path] = ARTIFACTS_DIR / "thermolens_classifier.joblib"
-BASELINES_PATH: Final[Path] = ARTIFACTS_DIR / "facility_baselines.json"
+# Core Model Paths
+CLASSIFICATION_DIR = Path(__file__).resolve().parent
+MODEL_PATH = CLASSIFICATION_DIR / "industrial_hazard_xgboost_master.json"
 
-FEATURE_COLUMNS: Final[list[str]] = [
-    "brightness",
-    "frp",
-    "distance_to_facility_m",
-    "persistence_days",
-    "confidence_num",
-    "baseline_frp",
+FEATURE_COLS = [
+    'fp_power', 'fp_t4', 'log_fp_power', 'thermal_contrast',
+    'normal_frp_median', 'frp_std_dev', 'normal_t4_median', 't4_std_dev',
+    'frp_to_median_ratio', 't4_delta_median', 'max_frp_recorded',
+    'pixel_area', 'frp_density', 'confidence_num',
+    'total_passes', 'monsoon_ratio', 'night_ratio',
+    'sin_month', 'cos_month'
 ]
 
-DEFAULT_BASELINE_FRP: Final[float] = 35.0
-BASE_CLASSES: Final[set[str]] = {
-    "gas_flare",
-    "industrial",
-    "wildfire",
-    "agricultural_burn",
+ML_CLASS_NAMES = [
+    'Background Noise', 'Agricultural Burn', 'Wildfire',
+    'Industrial/Flare', 'Mining/Kiln', 'Industrial Hazard'
+]
+
+# Map ML names to our API expected schemas
+CLASS_MAP = {
+    'Background Noise': 'unknown',
+    'Agricultural Burn': 'agricultural_burn',
+    'Wildfire': 'wildfire',
+    'Industrial/Flare': 'industrial',
+    'Mining/Kiln': 'industrial',
+    'Industrial Hazard': 'abnormal_industrial'
 }
 
+DEFAULT_BASELINE_FRP: Final[float] = 35.0
 
 def _load_model() -> Any | None:
-    """Load the scikit-learn model without making app startup fragile."""
+    """Load the xgboost json model without making app startup fragile."""
     try:
         if not MODEL_PATH.exists():
-            LOGGER.warning("ThermoLens classifier artifact missing: %s", MODEL_PATH)
+            LOGGER.warning("ThermoLens xgboost artifact missing: %s", MODEL_PATH)
             return None
-        return joblib.load(MODEL_PATH)
+        booster = xgb.Booster()
+        booster.load_model(str(MODEL_PATH))
+        LOGGER.info("Successfully loaded XGBoost ML model from %s", MODEL_PATH)
+        return booster
     except Exception:
-        LOGGER.exception("Failed to load ThermoLens classifier from %s", MODEL_PATH)
+        LOGGER.exception("Failed to load ThermoLens XGBoost from %s", MODEL_PATH)
         return None
 
-
-def _load_facility_baselines() -> dict[str, dict[str, float]]:
-    """Load facility baselines with a small default fallback."""
-    fallback = {"default_refinery": {"mean_frp": DEFAULT_BASELINE_FRP}}
-    try:
-        if not BASELINES_PATH.exists():
-            LOGGER.warning("ThermoLens facility baselines missing: %s", BASELINES_PATH)
-            return fallback
-        with BASELINES_PATH.open("r", encoding="utf-8") as baselines_file:
-            loaded = json.load(baselines_file)
-        if not isinstance(loaded, dict):
-            LOGGER.warning("Facility baselines file did not contain a dictionary")
-            return fallback
-        return loaded
-    except Exception:
-        LOGGER.exception("Failed to load ThermoLens baselines from %s", BASELINES_PATH)
-        return fallback
-
-
 MODEL: Final[Any | None] = _load_model()
-FACILITY_BASELINES: Final[dict[str, dict[str, float]]] = _load_facility_baselines()
-
-
-def _as_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
-
 
 def calculate_severity_score(
     frp: float,
@@ -99,14 +64,6 @@ def calculate_severity_score(
     confidence_num: float,
     persistence_days: int,
 ) -> int:
-    """Calculate a 0-100 incident severity score.
-
-    Weighting:
-    - 40% FRP spike against facility baseline
-    - 30% proximity to industrial infrastructure
-    - 20% satellite confidence
-    - 10% repeated temporal persistence
-    """
     safe_baseline = max(float(baseline_frp), 1.0)
     spike_ratio = max(float(frp), 0.0) / safe_baseline
 
@@ -117,25 +74,11 @@ def calculate_severity_score(
 
     return int(round(frp_spike_component + proximity_component + confidence_component + persistence_component))
 
-
-def _feature_frame(hotspot: dict[str, Any]) -> pd.DataFrame:
-    baseline_frp = _as_float(hotspot.get("baseline_frp"), DEFAULT_BASELINE_FRP)
-    row = {
-        "brightness": _as_float(hotspot.get("brightness"), 0.0),
-        "frp": _as_float(hotspot.get("frp"), 0.0),
-        "distance_to_facility_m": _as_float(hotspot.get("distance_to_facility_m"), 10_000.0),
-        "persistence_days": _as_int(hotspot.get("persistence_days"), 1),
-        "confidence_num": _as_float(hotspot.get("confidence_num"), 0.0),
-        "baseline_frp": baseline_frp,
-    }
-    return pd.DataFrame([row], columns=FEATURE_COLUMNS)
-
-
 def _fallback_classification(hotspot: dict[str, Any]) -> tuple[str, float]:
-    """Small deterministic fallback for CI or first boot before artifacts exist."""
-    distance_m = _as_float(hotspot.get("distance_to_facility_m"), 10_000.0)
-    frp = _as_float(hotspot.get("frp"), 0.0)
-    brightness = _as_float(hotspot.get("brightness"), 0.0)
+    """Deterministic fallback if ML model is missing."""
+    distance_m = hotspot.get("distance_to_facility_m", 10_000.0)
+    frp = hotspot.get("frp", 0.0)
+    brightness = hotspot.get("brightness", 0.0)
 
     if distance_m <= 500.0 and frp >= 25.0:
         return "industrial", 0.55
@@ -145,45 +88,57 @@ def _fallback_classification(hotspot: dict[str, Any]) -> tuple[str, float]:
         return "wildfire", 0.55
     return "agricultural_burn", 0.50
 
-
-def _apply_remote_vegetation_rule(
-    predicted_class: str,
-    confidence_score: float,
-    frp: float,
-    brightness: float,
-    distance_m: float,
-    confidence_num: float,
-    persistence_days: int,
-) -> tuple[str, float]:
-    """Correct rural vegetation detections before they collapse into agri burn.
-
-    The MVP model does not yet receive land-cover polygons, so remote forest fires
-    can look similar to agricultural burning. This rule only adjusts non-industrial
-    remote detections with enough thermal signal to be operationally treated as
-    wildfire/vegetation fire.
-    """
-    if predicted_class not in {"agricultural_burn", "wildfire"}:
-        return predicted_class, confidence_score
-    if distance_m < 3000.0:
-        return predicted_class, confidence_score
-
-    has_strong_thermal_signal = frp >= 40.0 or brightness >= 360.0
-    has_confident_hot_signal = confidence_num >= 75.0 and brightness >= 345.0 and frp >= 15.0
-    has_persistent_signal = persistence_days >= 3 and frp >= 20.0
-
-    if has_strong_thermal_signal or has_confident_hot_signal or has_persistent_signal:
-        return "wildfire", max(confidence_score, 0.62)
-
-    return predicted_class, confidence_score
-
+def build_features(hotspot: dict[str, Any]) -> pd.DataFrame:
+    baseline = hotspot.get("baseline", {})
+    
+    # 1. Start with defaults
+    df_dict = {
+        'normal_frp_median': 0.0, 'frp_std_dev': 1.0, 
+        'normal_t4_median': 0.0, 't4_std_dev': 1.0,
+        'max_frp_recorded': 0.0, 'total_passes': 0.0,
+        'monsoon_ratio': 0.0, 'night_ratio': 0.0,
+        'pixel_area': 1.0, 'confidence_num': 50.0,
+        'fp_power': 0.0, 'fp_t4': 300.0
+    }
+    
+    # 2. Override with live hotspot data
+    df_dict['fp_power'] = hotspot.get("frp", 0.0)
+    df_dict['fp_t4'] = hotspot.get("brightness", 300.0)
+    df_dict['confidence_num'] = hotspot.get("confidence_num", 50.0)
+    
+    # 3. Override with historical baseline data
+    for k in df_dict.keys():
+        if k in baseline and pd.notnull(baseline[k]):
+            df_dict[k] = baseline[k]
+            
+    df = pd.DataFrame([df_dict])
+    
+    # 4. Calculate Physics Features
+    df['log_fp_power'] = np.log1p(df['fp_power'])
+    df['thermal_contrast'] = df['fp_t4'] - df['normal_t4_median'] 
+    df['t4_delta_median'] = df['fp_t4'] - df['normal_t4_median']
+    df['frp_to_median_ratio'] = df['fp_power'] / (df['normal_frp_median'] + 1e-5)
+    df['frp_density'] = df['fp_power'] / (df['pixel_area'] + 1e-5)
+    
+    # 5. Calculate Temporal Features
+    acq_date = hotspot.get("acq_date")
+    if acq_date:
+        month = acq_date.month
+    else:
+        month = 1
+    df['sin_month'] = np.sin(2 * np.pi * month / 12.0)
+    df['cos_month'] = np.cos(2 * np.pi * month / 12.0)
+    
+    return df[FEATURE_COLS]
 
 def predict_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
-    """Classify one enriched hotspot using the Thermal Fingerprinting Rule first."""
-    frp = _as_float(hotspot.get("frp"), 0.0)
-    baseline_frp = max(_as_float(hotspot.get("baseline_frp"), DEFAULT_BASELINE_FRP), 1.0)
-    distance_m = _as_float(hotspot.get("distance_to_facility_m"), 10_000.0)
-    confidence_num = _as_float(hotspot.get("confidence_num"), 0.0)
-    persistence_days = _as_int(hotspot.get("persistence_days"), 1)
+    frp = hotspot.get("frp", 0.0)
+    baseline_dict = hotspot.get("baseline", {})
+    baseline_frp = max(baseline_dict.get("normal_frp_median", DEFAULT_BASELINE_FRP), 1.0)
+    distance_m = hotspot.get("distance_to_facility_m", 10_000.0)
+    confidence_num = hotspot.get("confidence_num", 0.0)
+    persistence_days = hotspot.get("persistence_days", 1)
+    brightness = hotspot.get("brightness", 0.0)
 
     severity_score = calculate_severity_score(
         frp=frp,
@@ -193,44 +148,23 @@ def predict_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
         persistence_days=persistence_days,
     )
 
-    if distance_m <= 250.0 and frp >= (2.0 * baseline_frp):
-        return {
-            "predicted_class": "abnormal_industrial",
-            "confidence_score": 1.0,
-            "severity_score": severity_score,
-            "is_abnormal": True,
-        }
-
     if MODEL is None:
         predicted_class, confidence_score = _fallback_classification(hotspot)
     else:
-        features = _feature_frame(hotspot)
-        predicted_class = str(MODEL.predict(features)[0])
-        probabilities = MODEL.predict_proba(features)[0]
-        confidence_score = float(max(probabilities))
-
-    predicted_class, confidence_score = _apply_remote_vegetation_rule(
-        predicted_class=predicted_class,
-        confidence_score=confidence_score,
-        frp=frp,
-        brightness=_as_float(hotspot.get("brightness"), 0.0),
-        distance_m=distance_m,
-        confidence_num=confidence_num,
-        persistence_days=persistence_days,
-    )
-
-    if distance_m > 2000.0 and persistence_days >= 5:
-        predicted_class = "industrial"
-        confidence_score = max(confidence_score, 0.75)
-
-    if predicted_class not in BASE_CLASSES:
-        LOGGER.warning("Unexpected model class '%s'; falling back to industrial", predicted_class)
-        predicted_class = "industrial"
-        confidence_score = min(confidence_score, 0.50)
+        features_df = build_features(hotspot)
+        X = features_df.to_numpy(dtype=np.float32)
+        dmatrix = xgb.DMatrix(X, feature_names=FEATURE_COLS)
+        
+        probs = MODEL.predict(dmatrix)[0]
+        pred_idx = int(np.argmax(probs))
+        
+        raw_ml_class = ML_CLASS_NAMES[pred_idx]
+        predicted_class = CLASS_MAP.get(raw_ml_class, 'unknown')
+        confidence_score = float(probs[pred_idx])
 
     return {
         "predicted_class": predicted_class,
         "confidence_score": round(_clamp(confidence_score, 0.0, 1.0), 4),
         "severity_score": severity_score,
-        "is_abnormal": False,
+        "is_abnormal": predicted_class == "abnormal_industrial",
     }

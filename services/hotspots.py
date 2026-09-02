@@ -9,9 +9,11 @@ from collections import defaultdict
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 from shapely.prepared import PreparedGeometry, prep
@@ -191,17 +193,39 @@ def _fetch_live_firms_hotspots_cached(
     return tuple(_fetch_live_firms_hotspots(bounds, source, day_range, end_date))
 
 
-def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
+from services.spatial_cache import get_nearest_facility_distances, get_historical_baselines
+
+def _enrich_hotspots_batch(hotspots: list[RawHotspot], db: Session | None) -> dict[int, dict[str, Any]]:
+    if not hotspots:
+        return {}
+        
+    coords = [(h.lat, h.lon) for h in hotspots]
+    distances = get_nearest_facility_distances(coords)
+    baselines = get_historical_baselines(coords)
+    
+    enrichment = {}
+    for i, (dist, baseline) in enumerate(zip(distances, baselines)):
+        enrichment[i] = {
+            "distance_to_facility_m": dist if dist is not None else 10_000.0,
+            "persistence_days": 1, # To be implemented
+            "baseline": baseline
+        }
+        
+    return enrichment
+
+def _hotspot_to_feature(hotspot: RawHotspot, index: int, enriched_data: dict[str, Any]) -> dict[str, Any]:
     baseline_frp = 35.0
     affected_radius_m = estimate_affected_radius_m(hotspot)
     affected_area_km2 = math.pi * (affected_radius_m / 1000.0) ** 2
+    baseline_dict = enriched_data.get("baseline", {})
     classifier_input = {
         "brightness": hotspot.brightness,
         "frp": hotspot.frp,
-        "distance_to_facility_m": 10_000.0,
-        "persistence_days": 1,
+        "acq_date": hotspot.acq_date,
+        "distance_to_facility_m": enriched_data.get("distance_to_facility_m", 10_000.0),
+        "persistence_days": enriched_data.get("persistence_days", 1),
         "confidence_num": confidence_to_number(hotspot.confidence),
-        "baseline_frp": baseline_frp,
+        "baseline": baseline_dict,
     }
     classification = predict_hotspot(classifier_input)
 
@@ -222,8 +246,8 @@ def _hotspot_to_feature(hotspot: RawHotspot, index: int) -> dict[str, Any]:
             "acq_time": hotspot.acq_time,
             "confidence": hotspot.confidence,
             "satellite": hotspot.satellite,
-            "distance_to_facility_m": None,
-            "persistence_days": 1,
+            "distance_to_facility_m": enriched_data.get("distance_to_facility_m"),
+            "persistence_days": enriched_data.get("persistence_days", 1),
             "predicted_class": classification["predicted_class"],
             "confidence_score": round(float(classification["confidence_score"]) * 100.0),
             "severity_score": classification["severity_score"],
@@ -264,6 +288,7 @@ def get_hotspot_feature_collection(
     source: str = DEFAULT_SOURCE,
     day_range: int = DEFAULT_DAY_RANGE,
     limit: int = DEFAULT_LIMIT,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     requested_bounds = parse_bbox(bbox)
     india_bounds = DEFAULT_INDIA_BBOX
@@ -314,9 +339,12 @@ def get_hotspot_feature_collection(
             continue
         eligible_hotspots.append(hotspot)
 
+    limited_hotspots = _limit_balanced_by_date(eligible_hotspots, safe_limit)
+    enriched_data = _enrich_hotspots_batch(limited_hotspots, db)
+
     features = []
-    for index, hotspot in enumerate(_limit_balanced_by_date(eligible_hotspots, safe_limit)):
-        feature = _hotspot_to_feature(hotspot, index)
+    for index, hotspot in enumerate(limited_hotspots):
+        feature = _hotspot_to_feature(hotspot, index, enriched_data.get(index, {}))
         if hotspot_class and feature["properties"]["predicted_class"] != hotspot_class:
             continue
 

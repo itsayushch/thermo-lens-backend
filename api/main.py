@@ -50,14 +50,21 @@ app.add_middleware(
 app.include_router(ml_router)
 
 
+@app.on_event("startup")
+def startup_event():
+    logger.info("Initializing spatial cache on startup...")
+    from services.spatial_cache import _init_cache
+    _init_cache()
+
+
 @app.get("/", tags=["Root"])
-def root() -> Dict[str, str]:
-    """Root metadata endpoint."""
+def read_root() -> Dict[str, Any]:
+    """Root endpoint returning basic API metadata."""
     return {
-        "title": "ThermoLens API",
-        "version": "0.1.0",
+        "service": "ThermoLens Geospatial API",
+        "version": "1.0.0",
+        "status": "operational",
         "docs_url": "/docs",
-        "health_url": "/health",
     }
 
 
@@ -146,6 +153,7 @@ def get_hotspots(
         le=5000,
         description="Maximum number of hotspots to return",
     ),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Query satellite hotspot detections filtered by bounding box, date range, and classification.
 
@@ -161,6 +169,7 @@ def get_hotspots(
             source=source,
             day_range=day_range,
             limit=limit,
+            db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
