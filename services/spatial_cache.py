@@ -1,4 +1,5 @@
 import logging
+import gc
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -10,11 +11,17 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 PARQUET_PATH = DATA_DIR / "factory_roster_2yr.parquet"
 
 _ball_tree = None
-_facility_coords = None
 _baseline_df = None
 
+ML_COLUMNS = [
+    'lat_grid', 'lon_grid', 'normal_frp_median', 'frp_std_dev',
+    'normal_t4_median', 't4_std_dev', 'max_frp_recorded',
+    'total_passes', 'monsoon_ratio', 'night_ratio',
+]
+ROSTER_COLUMNS = [*ML_COLUMNS, 'night_passes']
+
 def _init_cache():
-    global _ball_tree, _facility_coords, _baseline_df
+    global _ball_tree, _baseline_df
     if _ball_tree is not None:
         return
 
@@ -24,34 +31,33 @@ def _init_cache():
 
     LOGGER.info("Loading facility roster into Pandas memory cache...")
     try:
-        df = pd.read_parquet(PARQUET_PATH)
+        # Read only the columns used at runtime. The source parquet contains
+        # additional data that is not needed for API inference.
+        df = pd.read_parquet(PARQUET_PATH, columns=ROSTER_COLUMNS)
         df = df.drop_duplicates(subset=['lat_grid', 'lon_grid'])
         
         # 1. Build Historical Baseline (for ML Inference)
         LOGGER.info(f"Building memory-optimized baseline index for {len(df)} points...")
         # Keep only the columns needed by the ML model to save RAM
-        ml_cols = ['lat_grid', 'lon_grid', 'normal_frp_median', 'frp_std_dev', 
-                   'normal_t4_median', 't4_std_dev', 'max_frp_recorded', 
-                   'total_passes', 'monsoon_ratio', 'night_ratio']
-
-        required_cols = set(ml_cols) | {'night_passes'}
+        required_cols = set(ROSTER_COLUMNS)
         missing_cols = required_cols.difference(df.columns)
         if missing_cols:
             raise ValueError(
                 f"Facility roster is missing required columns: {sorted(missing_cols)}"
             )
 
-        # Derive facility coordinates before reducing the dataframe to ML columns.
-        facility_df = df[
-            (df['total_passes'] >= 15) | (df['night_passes'] >= 5)
-        ]
-        
-        df = df[ml_cols].copy()
-        
-        # Downcast to float32 to drastically reduce RAM usage (so it fits in Render 512MB Free Tier)
-        for col in ml_cols:
+        # Downcast before constructing the index or spatial tree to keep the
+        # startup memory peak as low as possible.
+        for col in ROSTER_COLUMNS:
             if df[col].dtype == 'float64':
                 df[col] = df[col].astype('float32')
+
+        facility_mask = (df['total_passes'] >= 15) | (df['night_passes'] >= 5)
+        coords_rad = np.radians(
+            df.loc[facility_mask, ['lat_grid', 'lon_grid']].to_numpy(
+                dtype=np.float64, copy=True
+            )
+        )
         
         # Round the grid to 3 decimal places to avoid floating point hash issues
         df['lat_grid'] = df['lat_grid'].round(3)
@@ -59,15 +65,16 @@ def _init_cache():
         
         # Store as a multi-index DataFrame instead of 4.9M Python dictionaries
         global _baseline_df
-        _baseline_df = df.set_index(['lat_grid', 'lon_grid'])
+        df.drop(columns=['night_passes'], inplace=True)
+        df.set_index(['lat_grid', 'lon_grid'], inplace=True)
+        _baseline_df = df
         
         # 2. Build BallTree for True Factories (for Spatial Distance)
         LOGGER.info("Filtering true factories for BallTree...")
-        _facility_coords = facility_df[['lat_grid', 'lon_grid']].values
-        coords_rad = np.radians(_facility_coords)
-        
-        LOGGER.info(f"Building BallTree for {len(_facility_coords)} facility locations...")
+        LOGGER.info(f"Building BallTree for {len(coords_rad)} facility locations...")
         _ball_tree = BallTree(coords_rad, metric='haversine')
+        del coords_rad
+        gc.collect()
         LOGGER.info("Spatial cache initialization complete.")
     except Exception as e:
         LOGGER.error(f"Failed to initialize spatial cache: {e}", exc_info=True)
