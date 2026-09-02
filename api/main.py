@@ -45,7 +45,7 @@ if os.getenv("FRONTEND_URL"):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1):\d+)|(https://.*\.vercel\.app)$",
+    allow_origin_regex=r"^https?://(localhost:\d+|127\.0\.0\.1:\d+|.*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
