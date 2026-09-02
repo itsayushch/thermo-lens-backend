@@ -4,6 +4,9 @@ Geospatial industrial-fire classification backend system. ThermoLens ingests sat
 
 ---
 
+## Frontend Repo Link
+https://github.com/itsayushch/thermolens-web
+
 ## Module Ownership & Team Architecture
 
 ThermoLens backend is organized into four modular domains, designed for parallel development across four engineers:
